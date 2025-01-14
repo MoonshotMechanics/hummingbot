@@ -3,12 +3,22 @@
 import asyncio
 import logging
 from decimal import Decimal
-from typing import Dict, List
+from typing import Dict, List, Optional
+
+from pydantic import Field
 
 from hummingbot.client.config.config_data_types import ClientFieldData
+from hummingbot.connector.trading_rule import TradingRule
 from hummingbot.core.data_type.common import OrderType, PriceType, TradeType
 from hummingbot.core.data_type.trade_fee import TradeFeeSchema
-from hummingbot.connector.trading_rule import TradingRule
+from hummingbot.core.event.events import (
+    BuyOrderCompletedEvent,
+    MarketOrderFailureEvent,
+    OrderCancelledEvent,
+    OrderFilledEvent,
+    SellOrderCompletedEvent,
+)
+from hummingbot.core.gateway.gateway_http_client import GatewayHttpClient
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
 from hummingbot.strategy.script_strategy_base import ScriptStrategyBase
 from hummingbot.strategy_v2.controllers.directional_trading_controller_base import (
@@ -20,16 +30,6 @@ from hummingbot.strategy_v2.executors.position_executor.data_types import (
     TrailingStop,
     TripleBarrierConfig,
 )
-from hummingbot.core.event.events import (
-    BuyOrderCompletedEvent,
-    SellOrderCompletedEvent,
-    MarketOrderFailureEvent,
-    OrderCancelledEvent,
-    OrderFilledEvent,
-)
-from hummingbot.core.gateway.gateway_http_client import GatewayHttpClient
-
-from pydantic import Field
 
 
 class TrailingStopControllerConfig(DirectionalTradingControllerConfigBase):
@@ -89,22 +89,15 @@ class TrailingStopController(DirectionalTradingControllerBase):
     async def update_processed_data(self):
         """Update the processed data based on the current state of the strategy."""
         try:
-            # Get current price directly through Gateway client
-            price_response = await GatewayHttpClient.get_instance().get_price(
-                "solana",
-                "mainnet-beta",
-                "jupiter",
-                "ai16z",
-                "USDC",
-                Decimal("0.1"),
-                TradeType.SELL,
+            # Get current price using market data provider
+            current_price = self.market_data_provider.get_price_by_type(
+                self.config.connector_name, self.config.trading_pair, PriceType.MidPrice
             )
 
-            if price_response and "price" in price_response:
-                current_price = Decimal(str(price_response["price"]))
+            if current_price:
                 self._logger.info(f"Current price: {current_price:.6f} USDC per ai16z")
             else:
-                self._logger.warning("Failed to get valid price response")
+                self._logger.warning("Failed to get valid price")
                 return
 
             # Get candles data
@@ -137,6 +130,32 @@ class TrailingStopController(DirectionalTradingControllerBase):
             self._logger.error(
                 f"Error updating processed data: {str(e)}", exc_info=True
             )
+
+    def determine_executor_actions(self) -> List[Dict]:
+        """Determine what actions to take based on the processed data."""
+        if not self.processed_data:
+            return []
+
+        actions = []
+        signal = self.processed_data["signal"]
+        current_price = self.processed_data["current_price"]
+
+        if signal != 0:
+            # Create a new position executor
+            trade_type = TradeType.SELL if signal < 0 else TradeType.BUY
+            executor_config = self.get_executor_config(
+                trade_type=trade_type,
+                price=current_price,
+                amount=self.config.order_amount,
+            )
+            actions.append(
+                {
+                    "action": "create_position_executor",
+                    "executor_config": executor_config,
+                }
+            )
+
+        return actions
 
     def get_executor_config(
         self, trade_type: TradeType, price: Decimal, amount: Decimal
@@ -177,8 +196,8 @@ class NativeTrailingStop(ScriptStrategyBase):
 
         # Configure rate oracle source
         from hummingbot.core.rate_oracle.rate_oracle import (
-            RateOracle,
             RATE_ORACLE_SOURCES,
+            RateOracle,
         )
 
         rate_oracle = RateOracle.get_instance()
@@ -437,3 +456,72 @@ class NativeTrailingStop(ScriptStrategyBase):
     def markets_ready(self) -> bool:
         """Check if markets are ready for trading"""
         return all(market.ready for market in self.connectors.values())
+
+    async def check_initial_balance(self):
+        """Check if we have enough balance to start the strategy."""
+        base_token = self.trading_pair.split("-")[0]
+        quote_token = self.trading_pair.split("-")[1]
+
+        # Get balances through connector
+        connector = self.market_data_provider.connectors[self.config.connector_name]
+        balances = await connector.get_all_balances()
+
+        if balances:
+            base_balance = Decimal(str(balances.get(base_token, 0)))
+            quote_balance = Decimal(str(balances.get(quote_token, 0)))
+
+            self._logger.info(
+                f"Initial balances: {base_balance} {base_token}, {quote_balance} {quote_token}"
+            )
+
+            if base_balance > 0:
+                self.initial_position = base_balance
+                self.current_position = base_balance
+                return True
+            else:
+                self._logger.error(
+                    f"Insufficient {base_token} balance to start strategy."
+                )
+                return False
+        else:
+            self._logger.error("Failed to get balances.")
+            return False
+
+    async def get_current_price(self) -> Optional[Decimal]:
+        """Get current price from market data provider."""
+        try:
+            current_price = self.market_data_provider.get_price_by_type(
+                self.config.connector_name, self.config.trading_pair, PriceType.MidPrice
+            )
+            return current_price
+        except Exception as e:
+            self._logger.error(f"Error getting price: {str(e)}")
+            return None
+
+    async def execute_trade(self, side: str, amount: Decimal) -> bool:
+        """Execute a trade through the position executor."""
+        try:
+            # Get current price
+            current_price = await self.get_current_price()
+            if not current_price:
+                self._logger.error("Failed to get current price for trade execution")
+                return False
+
+            # Create executor config
+            trade_type = TradeType.SELL if side.upper() == "SELL" else TradeType.BUY
+            executor_config = self.get_executor_config(
+                trade_type=trade_type, price=current_price, amount=amount
+            )
+
+            # Create and start position executor
+            executor = await self.controller.create_position_executor(executor_config)
+            if executor:
+                self._logger.info(f"Created position executor {executor.id}")
+                return True
+            else:
+                self._logger.error("Failed to create position executor")
+                return False
+
+        except Exception as e:
+            self._logger.error(f"Error executing trade: {str(e)}")
+            return False
