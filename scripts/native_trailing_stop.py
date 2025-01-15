@@ -85,51 +85,46 @@ class TrailingStopController(DirectionalTradingControllerBase):
             ]
         super().__init__(config, *args, **kwargs)
         self.config = config
+        self._executors = []  # List to store position executors
+        self._logger = logging.getLogger(__name__)
+        self._logger.setLevel(logging.INFO)
+
+    def get_all_executors(self):
+        """Return all position executors."""
+        return self._executors
+
+    def filter_executors(self, executors, filter_func):
+        """Filter executors based on the provided filter function."""
+        return [executor for executor in executors if filter_func(executor)]
+
+    async def create_position_executor(self, config):
+        """Create a new position executor and store it."""
+        executor = await super().create_position_executor(config)
+        if executor:
+            self._executors.append(executor)
+        return executor
 
     async def update_processed_data(self):
         """Update the processed data based on the current state of the strategy."""
         try:
-            # Get current price using market data provider
-            current_price = self.market_data_provider.get_price_by_type(
-                self.config.connector_name, self.config.trading_pair, PriceType.MidPrice
+            connector = self.market_data_provider.connectors[self.config.connector_name]
+            current_price = await connector.get_quote_price(
+                self.config.trading_pair,
+                is_buy=True,  # We'll use the buy price as mid price
+                amount=Decimal("1"),  # Get price for 1 unit
             )
-
-            if current_price:
-                self._logger.info(f"Current price: {current_price:.6f} USDC per ai16z")
-            else:
-                self._logger.warning("Failed to get valid price")
+            if current_price is None:
+                self._logger.error("Failed to get current price")
                 return
 
-            # Get candles data
-            candles = self.market_data_provider.get_candles_df(
-                connector_name=self.config.connector_name,
-                trading_pair=self.config.trading_pair,
-                interval=self.config.candles_interval,
-                max_records=100,
-            )
-
-            # Default signal is 0 (no action)
-            signal = 0
-
-            # Check if we have any active executors
-            active_executors = self.filter_executors(
-                executors=self.get_all_executors(), filter_func=lambda e: e.is_active
-            )
-
-            # If no active executors, generate a signal to create one
-            if not active_executors:
-                signal = -1  # Signal for SELL since we're selling ai16z
-
             self.processed_data = {
-                "signal": signal,
-                "features": candles,  # Store candles data for analysis
                 "current_price": current_price,
+                "signal": -1
+                if not self.get_all_executors()
+                else 0,  # Sell signal if no active executors
             }
-
         except Exception as e:
-            self._logger.error(
-                f"Error updating processed data: {str(e)}", exc_info=True
-            )
+            self._logger.error(f"Error updating processed data: {str(e)}")
 
     def determine_executor_actions(self) -> List[Dict]:
         """Determine what actions to take based on the processed data."""
@@ -307,6 +302,23 @@ class NativeTrailingStop(ScriptStrategyBase):
             # Log current state
             self._logger.info("\n=== TICK START ===")
 
+            # Update controller's processed data
+            await self.controller.update_processed_data()
+            self._logger.info(
+                f"Signal: {self.controller.processed_data.get('signal', 0)}"
+            )
+            self._logger.info(
+                f"Current price: {self.controller.processed_data.get('current_price', 'N/A')}"
+            )
+
+            # Process any pending actions from the controller
+            while not self.controller.actions_queue.empty():
+                action = await self.controller.actions_queue.get()
+                if action["action"] == "create_position_executor":
+                    await self.controller.create_position_executor(
+                        action["executor_config"]
+                    )
+
             # Get active executors - this is synchronous
             active_executors = self.controller.filter_executors(
                 executors=self.controller.get_all_executors(),
@@ -315,11 +327,6 @@ class NativeTrailingStop(ScriptStrategyBase):
 
             # Log executor status
             if active_executors:
-                # Get current price once for all executors
-                current_price = self.market_data_provider.get_price_by_type(
-                    self.connector_name, self.trading_pair, PriceType.MidPrice
-                )
-
                 for executor in active_executors:
                     try:
                         self._logger.info(f"Active executor {executor.id}:")
@@ -327,7 +334,7 @@ class NativeTrailingStop(ScriptStrategyBase):
                         self._logger.info(f"  Amount: {executor.config.amount}")
                         self._logger.info(f"  Entry price: {executor.entry_price}")
                         self._logger.info(
-                            f"  Current price: {current_price if current_price else 'N/A'}"
+                            f"  Current price: {executor.current_price if executor.current_price else 'N/A'}"
                         )
                         self._logger.info(
                             f"  Net PnL %: {executor.get_net_pnl_pct():.2%}"
