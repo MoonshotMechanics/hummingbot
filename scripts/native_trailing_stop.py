@@ -18,7 +18,6 @@ from hummingbot.core.event.events import (
     OrderFilledEvent,
     SellOrderCompletedEvent,
 )
-from hummingbot.core.gateway.gateway_http_client import GatewayHttpClient
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
 from hummingbot.strategy.script_strategy_base import ScriptStrategyBase
 from hummingbot.strategy_v2.controllers.directional_trading_controller_base import (
@@ -107,21 +106,65 @@ class TrailingStopController(DirectionalTradingControllerBase):
     async def update_processed_data(self):
         """Update the processed data based on the current state of the strategy."""
         try:
+            # Get the Gateway connector
             connector = self.market_data_provider.connectors[self.config.connector_name]
+
+            # Get current price using Gateway's quote price method
             current_price = await connector.get_quote_price(
                 self.config.trading_pair,
-                is_buy=True,  # We'll use the buy price as mid price
-                amount=Decimal("1"),  # Get price for 1 unit
+                is_buy=True,
+                amount=Decimal("1"),
             )
+
             if current_price is None:
                 self._logger.error("Failed to get current price")
                 return
 
+            # Default signal is 0 (no action)
+            signal = 0
+
+            # Get candles data for analysis if available
+            try:
+                candles_df = self.market_data_provider.get_candles_df(
+                    connector_name=self.config.connector_name,
+                    trading_pair=self.config.trading_pair,
+                    interval=self.config.candles_interval,
+                )
+
+                if not candles_df.empty:
+                    # Add technical indicators
+                    candles_df.ta.rsi(length=14, append=True)
+                    candles_df.ta.bbands(length=20, std=2, append=True)
+                    candles_df.ta.ema(length=14, append=True)
+
+                    # Get latest indicator values
+                    latest_rsi = candles_df["RSI_14"].iloc[-1]
+                    latest_bb_lower = candles_df["BBL_20_2.0"].iloc[-1]
+                    latest_bb_upper = candles_df["BBU_20_2.0"].iloc[-1]
+                    latest_ema = candles_df["EMA_14"].iloc[-1]
+
+                    # Check for buy conditions only if no active positions
+                    active_executors = self.get_all_executors()
+                    if not active_executors:
+                        if (
+                            latest_rsi < 30
+                            and current_price < latest_bb_lower
+                            and current_price < latest_ema
+                        ):
+                            signal = 1  # Generate buy signal
+                            self._logger.info(
+                                "Buy signal generated based on technical analysis"
+                            )
+                            self._logger.info(f"RSI: {latest_rsi:.2f}")
+                            self._logger.info(f"BB Lower: {latest_bb_lower:.6f}")
+                            self._logger.info(f"EMA: {latest_ema:.6f}")
+            except Exception as e:
+                self._logger.warning(f"Error processing candles data: {str(e)}")
+                # Continue with just price data if candles are not available
+
             self.processed_data = {
                 "current_price": current_price,
-                "signal": -1
-                if not self.get_all_executors()
-                else 0,  # Sell signal if no active executors
+                "signal": signal,
             }
         except Exception as e:
             self._logger.error(f"Error updating processed data: {str(e)}")
