@@ -299,37 +299,53 @@ class NativeTrailingStop(ScriptStrategyBase):
 
     async def on_tick(self):
         """Called every tick (1 second by default)"""
-        if not self.markets_ready:
-            # Use logger correctly
-            self._logger.warning("Markets not ready. Please wait...")
-            return
+        try:
+            if not self.markets_ready:
+                self._logger.warning("Markets not ready. Please wait...")
+                return
 
-        # Log current state
-        self._logger.info("\n=== TICK START ===")
+            # Log current state
+            self._logger.info("\n=== TICK START ===")
 
-        # Get active executors
-        active_executors = self.controller.filter_executors(
-            executors=self.controller.get_all_executors(),
-            filter_func=lambda e: e.is_active,
-        )
+            # Get active executors - this is synchronous
+            active_executors = self.controller.filter_executors(
+                executors=self.controller.get_all_executors(),
+                filter_func=lambda e: e.is_active,
+            )
 
-        # Log executor status
-        if active_executors:
-            for executor in active_executors:
-                self._logger.info(f"Active executor {executor.id}:")
-                self._logger.info(f"  Side: {executor.side}")
-                self._logger.info(f"  Amount: {executor.config.amount}")
-                self._logger.info(f"  Entry price: {executor.entry_price}")
-                self._logger.info(f"  Current price: {executor.current_price}")
-                self._logger.info(f"  Net PnL %: {executor.get_net_pnl_pct():.2%}")
-                if executor._trailing_stop_trigger_pct:
-                    self._logger.info(
-                        f"  Trailing stop trigger: {executor._trailing_stop_trigger_pct:.2%}"
-                    )
-        else:
-            self._logger.info("No active executors")
+            # Log executor status
+            if active_executors:
+                # Get current price once for all executors
+                current_price = self.market_data_provider.get_price_by_type(
+                    self.connector_name, self.trading_pair, PriceType.MidPrice
+                )
 
-        self._logger.info("=== TICK END ===\n")
+                for executor in active_executors:
+                    try:
+                        self._logger.info(f"Active executor {executor.id}:")
+                        self._logger.info(f"  Side: {executor.side}")
+                        self._logger.info(f"  Amount: {executor.config.amount}")
+                        self._logger.info(f"  Entry price: {executor.entry_price}")
+                        self._logger.info(
+                            f"  Current price: {current_price if current_price else 'N/A'}"
+                        )
+                        self._logger.info(
+                            f"  Net PnL %: {executor.get_net_pnl_pct():.2%}"
+                        )
+                        if executor._trailing_stop_trigger_pct:
+                            self._logger.info(
+                                f"  Trailing stop trigger: {executor._trailing_stop_trigger_pct:.2%}"
+                            )
+                    except Exception as e:
+                        self._logger.error(
+                            f"Error processing executor {executor.id}: {str(e)}"
+                        )
+            else:
+                self._logger.info("No active executors")
+
+            self._logger.info("=== TICK END ===\n")
+        except Exception as e:
+            self._logger.error(f"Error in on_tick: {str(e)}")
 
     def did_complete_buy_order(self, event: BuyOrderCompletedEvent):
         """Called when a buy order is completed."""
@@ -525,3 +541,14 @@ class NativeTrailingStop(ScriptStrategyBase):
         except Exception as e:
             self._logger.error(f"Error executing trade: {str(e)}")
             return False
+
+    def tick(self, timestamp: float):
+        """Clock tick entry point"""
+        if not self.ready_to_trade:
+            self.ready_to_trade = all(ex.ready for ex in self.connectors.values())
+            if not self.ready_to_trade:
+                for con in [c for c in self.connectors.values() if not c.ready]:
+                    self._logger.warning(f"{con.name} is not ready. Please wait...")
+                return
+
+        asyncio.create_task(self.on_tick())
