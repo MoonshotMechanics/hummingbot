@@ -23,16 +23,17 @@ class GatewaySolanaAMM(GatewayEVMAMM):
     API_CALL_TIMEOUT = 60.0
     POLL_INTERVAL = 15.0
 
-    def __init__(self,
-                 client_config_map: "ClientConfigAdapter",
-                 connector_name: str,
-                 chain: str,
-                 network: str,
-                 address: str,
-                 trading_pairs: List[str] = [],
-                 additional_spenders: List[str] = [],  # not implemented
-                 trading_required: bool = True
-                 ):
+    def __init__(
+        self,
+        client_config_map: "ClientConfigAdapter",
+        connector_name: str,
+        chain: str,
+        network: str,
+        address: str,
+        trading_pairs: List[str] = [],
+        additional_spenders: List[str] = [],  # not implemented
+        trading_required: bool = True,
+    ):
         """
         :param connector_name: name of connector on gateway
         :param chain: refers to a block chain, e.g. ethereum or avalanche
@@ -41,14 +42,16 @@ class GatewaySolanaAMM(GatewayEVMAMM):
         :param trading_pairs: a list of trading pairs
         :param trading_required: Whether actual trading is needed. Useful for some functionalities or commands like the balance command
         """
-        super().__init__(client_config_map=client_config_map,
-                         connector_name=connector_name,
-                         chain=chain,
-                         network=network,
-                         address=address,
-                         trading_pairs=trading_pairs,
-                         additional_spenders=additional_spenders,
-                         trading_required=trading_required)
+        super().__init__(
+            client_config_map=client_config_map,
+            connector_name=connector_name,
+            chain=chain,
+            network=network,
+            address=address,
+            trading_pairs=trading_pairs,
+            additional_spenders=additional_spenders,
+            trading_required=trading_required,
+        )
         self._native_currency = "SOL"
 
     @classmethod
@@ -72,9 +75,7 @@ class GatewaySolanaAMM(GatewayEVMAMM):
             raise
         except Exception as e:
             self.logger().network(
-                "Error fetching chain info",
-                exc_info=True,
-                app_warning_msg=str(e)
+                "Error fetching chain info", exc_info=True, app_warning_msg=str(e)
             )
 
     async def start_network(self):
@@ -106,24 +107,28 @@ class GatewaySolanaAMM(GatewayEVMAMM):
             *[tracked_order.get_exchange_order_id() for tracked_order in tracked_orders]
         )
         self.logger().debug(
-            "Polling for order status updates of %d orders.",
-            len(tracked_orders)
+            "Polling for order status updates of %d orders.", len(tracked_orders)
         )
-        update_results: List[Union[Dict[str, Any], Exception]] = await safe_gather(*[
-            self._get_gateway_instance().get_transaction_status(
-                self.chain,
-                self.network,
-                tx_hash
-            )
-            for tx_hash in tx_hash_list
-        ], return_exceptions=True)
+        update_results: List[Union[Dict[str, Any], Exception]] = await safe_gather(
+            *[
+                self._get_gateway_instance().get_transaction_status(
+                    self.chain, self.network, tx_hash
+                )
+                for tx_hash in tx_hash_list
+            ],
+            return_exceptions=True,
+        )
         for tracked_order, tx_details in zip(tracked_orders, update_results):
             if isinstance(tx_details, Exception):
-                self.logger().error(f"An error occurred fetching transaction status of {tracked_order.client_order_id}")
+                self.logger().error(
+                    f"An error occurred fetching transaction status of {tracked_order.client_order_id}"
+                )
                 continue
             if "txHash" not in tx_details:
-                self.logger().error(f"No txHash field for transaction status of {tracked_order.client_order_id}: "
-                                    f"{tx_details}.")
+                self.logger().error(
+                    f"No txHash field for transaction status of {tracked_order.client_order_id}: "
+                    f"{tx_details}."
+                )
                 continue
             tx_status: int = tx_details["txStatus"]
             tx_receipt: Optional[Dict[str, Any]] = tx_details["txData"]
@@ -148,6 +153,8 @@ class GatewaySolanaAMM(GatewayEVMAMM):
             elif tx_status == -1:
                 self.logger().network(
                     f"Error fetching transaction status for the order {tracked_order.client_order_id}: {tx_details}.",
-                    app_warning_msg=f"Failed to fetch transaction status for the order {tracked_order.client_order_id}."
+                    app_warning_msg=f"Failed to fetch transaction status for the order {tracked_order.client_order_id}.",
                 )
-                await self._order_tracker.process_order_not_found(tracked_order.client_order_id)
+                await self._order_tracker.process_order_not_found(
+                    tracked_order.client_order_id
+                )
