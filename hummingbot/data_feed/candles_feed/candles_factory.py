@@ -7,6 +7,9 @@ from hummingbot.data_feed.candles_feed.binance_perpetual_candles import (
     BinancePerpetualCandles,
 )
 from hummingbot.data_feed.candles_feed.binance_spot_candles import BinanceSpotCandles
+from hummingbot.data_feed.candles_feed.birdeye_candles.birdeye_candles import (
+    BitqueryCandles,
+)
 from hummingbot.data_feed.candles_feed.bybit_perpetual_candles.bybit_perpetual_candles import (
     BybitPerpetualCandles,
 )
@@ -83,6 +86,7 @@ class CandlesFactory:
         "bybit_perpetual": BybitPerpetualCandles,
         "hyperliquid": HyperliquidSpotCandles,
         "hyperliquid_perpetual": HyperliquidPerpetualCandles,
+        "birdeye": BitqueryCandles,
     }
 
     @classmethod

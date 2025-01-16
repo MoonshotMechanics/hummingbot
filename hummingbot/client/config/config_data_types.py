@@ -8,7 +8,10 @@ from pydantic import BaseModel, Extra, Field, validator
 from pydantic.schema import default_ref_template
 
 from hummingbot.client.config.config_methods import strategy_config_schema_encoder
-from hummingbot.client.config.config_validators import validate_connector, validate_decimal
+from hummingbot.client.config.config_validators import (
+    validate_connector,
+    validate_decimal,
+)
 
 
 class ClientConfigEnum(Enum):
@@ -18,11 +21,12 @@ class ClientConfigEnum(Enum):
 
 @dataclass()
 class ClientFieldData:
-    prompt: Optional[Callable[['BaseClientModel'], str]] = None
+    prompt: Optional[Callable[["BaseClientModel"], str]] = None
     prompt_on_new: bool = False
     is_secure: bool = False
     is_connect_key: bool = False
     is_updatable: bool = False
+    display_name: str = ""
 
 
 class BaseClientModel(BaseModel):
@@ -37,13 +41,17 @@ class BaseClientModel(BaseModel):
 
     @classmethod
     def schema_json(
-        cls, *, by_alias: bool = True, ref_template: str = default_ref_template, **dumps_kwargs: Any
+        cls,
+        *,
+        by_alias: bool = True,
+        ref_template: str = default_ref_template,
+        **dumps_kwargs: Any,
     ) -> str:
         # todo: make it ignore `client_data` all together
         return cls.__config__.json_dumps(
             cls.schema(by_alias=by_alias, ref_template=ref_template),
             default=strategy_config_schema_encoder,
-            **dumps_kwargs
+            **dumps_kwargs,
         )
 
     @classmethod
@@ -82,3 +90,19 @@ class BaseConnectorConfigMap(BaseClientModel):
         if ret is not None:
             raise ValueError(ret)
         return v
+
+    binance_api_key = ClientFieldData(
+        display_name="binance_api_key",
+        prompt=lambda cm: "Enter your Binance API key",
+        is_secure=True,
+        is_connect_key=True,
+        prompt_on_new=True,
+    )
+
+    birdeye_api_key = ClientFieldData(
+        display_name="birdeye_api_key",
+        prompt=lambda cm: "Enter your Birdeye API key",
+        is_secure=True,
+        is_connect_key=True,
+        prompt_on_new=True,
+    )
