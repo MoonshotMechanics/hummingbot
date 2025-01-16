@@ -5,18 +5,26 @@ from decimal import Decimal
 from typing import Dict, List, Optional, Union
 
 from hummingbot.connector.connector_base import ConnectorBase
-from hummingbot.core.data_type.common import OrderType, PositionMode, PriceType, TradeType
+from hummingbot.core.data_type.common import (
+    OrderType,
+    PositionMode,
+    PriceType,
+    TradeType,
+)
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
 from hummingbot.data_feed.market_data_provider import MarketDataProvider
 from hummingbot.strategy.strategy_v2_base import StrategyV2Base
-from hummingbot.strategy_v2.executors.position_executor.data_types import PositionExecutorConfig
-from hummingbot.strategy_v2.models.executor_actions import CreateExecutorAction, StopExecutorAction
+from hummingbot.strategy_v2.executors.position_executor.data_types import (
+    PositionExecutorConfig,
+)
+from hummingbot.strategy_v2.models.executor_actions import (
+    CreateExecutorAction,
+    StopExecutorAction,
+)
 from hummingbot.strategy_v2.rocketman.rocketman_config import RocketmanConfig
 from hummingbot.strategy_v2.rocketman.rocketman_controller import RocketmanController
 
-# Hardcoded Birdeye API key and token address
-BIRDEYE_API_KEY = "3c4f3db1188046bab20cec81ce430834"
-# AI16Z token and pair addresses
+# Hardcoded token address
 AI16Z_TOKEN_ADDRESS = "HeLp6NuQkmYB4pYWo2zYs22mESHXPQYzXbB8n4V98jwC"
 AI16Z_USDC_PAIR = "HbqujJENLP5cnH662jiaKvnbcVR9zz2HWPKRJob1m2s4"
 
@@ -77,7 +85,6 @@ class RocketmanStrategy(StrategyV2Base):
                 trading_pair=AI16Z_USDC_PAIR,  # Use the pair address for candles
                 interval="1m",
                 max_records=1000,
-                kwargs={"api_key": BIRDEYE_API_KEY},
             )
             self._market_data_provider.initialize_candles_feed(candles_config)
             await self._wait_for_candles_ready(candles_config)
