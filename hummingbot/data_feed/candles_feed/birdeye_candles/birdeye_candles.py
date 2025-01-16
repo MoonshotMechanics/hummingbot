@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+from datetime import datetime
 import logging
 from logging.handlers import RotatingFileHandler
 import asyncio
@@ -18,17 +19,36 @@ from hummingbot.data_feed.candles_feed.birdeye_candles.models import BirdeyeCand
 from hummingbot.logger import HummingbotLogger
 
 # Set up specific logger for birdeye candles data
-candles_logger = logging.getLogger("birdeye_candles")
-candles_logger.setLevel(logging.INFO)
-candles_logger.propagate = True  # Allow propagation to root logger
+logs_path = os.path.join(data_path(), "logs")
+log_file = os.path.join(logs_path, "logs_birdeye_candles.log")
+os.makedirs(logs_path, exist_ok=True)
 
-# Create file handler for candles log
-log_file = os.path.join(data_path(), "logs", "birdeye_candles.log")
-os.makedirs(os.path.dirname(log_file), exist_ok=True)
-file_handler = RotatingFileHandler(log_file, maxBytes=10 * 1024 * 1024, backupCount=5)
-formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s")
-file_handler.setFormatter(formatter)
-candles_logger.addHandler(file_handler)
+# Create logger
+_candles_logger = logging.getLogger("birdeye_candles")
+_candles_logger.setLevel(logging.INFO)
+
+# Remove any existing handlers
+for handler in _candles_logger.handlers[:]:
+    _candles_logger.removeHandler(handler)
+
+# Create file handler with detailed format
+file_handler = logging.FileHandler(log_file, mode="a")
+file_handler.setLevel(logging.INFO)
+file_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+file_handler.setFormatter(file_formatter)
+_candles_logger.addHandler(file_handler)
+
+# Prevent propagation to avoid duplicate logs
+_candles_logger.propagate = False
+
+# Test write to ensure logger is working
+with open(log_file, "a") as f:
+    f.write(
+        f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - INFO - === Starting new Birdeye candles session ===\n"
+    )
+
+# Make logger globally accessible
+_candles_logger = _candles_logger
 
 
 def handle_asyncio_error(loop, context):
@@ -84,7 +104,7 @@ class BirdeyeCandles:
             loop.set_exception_handler(handle_asyncio_error)
 
             self.logger().info("🔄 Initialized Birdeye historical candles")
-            candles_logger.info("=== Starting new Birdeye candles session ===")
+            _candles_logger.info("Initializing Birdeye candles feed")
 
             # Start fetching candles
             self._fetch_task = loop.create_task(self._fetch_and_handle_errors())
@@ -92,7 +112,7 @@ class BirdeyeCandles:
         except Exception as e:
             error_msg = f"Error initializing BirdeyeCandles: {str(e)}\n{''.join(traceback.format_tb(e.__traceback__))}"
             self.logger().error(error_msg)
-            candles_logger.error(error_msg)
+            _candles_logger.error(error_msg)
             raise
 
     def _initialize_db(self):
@@ -103,19 +123,24 @@ class BirdeyeCandles:
         except SQLAlchemyError as e:
             error_msg = f"Database error: {str(e)}\n{''.join(traceback.format_tb(e.__traceback__))}"
             self.logger().error(error_msg)
-            candles_logger.error(error_msg)
+            _candles_logger.error(error_msg)
             raise
         except Exception as e:
             error_msg = f"Error initializing database: {str(e)}\n{''.join(traceback.format_tb(e.__traceback__))}"
             self.logger().error(error_msg)
-            candles_logger.error(error_msg)
+            _candles_logger.error(error_msg)
             raise
 
     @catch_and_log_errors
     async def _fetch_and_handle_errors(self):
         """Wrapper to handle errors in the async task"""
-        await self.fetch_candles()
-        self._ready = True
+        candles = await self.fetch_candles()
+        # Only mark as ready if we got candle data
+        if candles:
+            self._ready = True
+            self.logger().info(f"Feed ready with {len(candles)} candles")
+        else:
+            self.logger().warning("Feed not ready - no candle data received")
 
     @classmethod
     def logger(cls) -> HummingbotLogger:
@@ -130,6 +155,7 @@ class BirdeyeCandles:
     async def fetch_candles(self) -> List[List[float]]:
         """Fetch 5m candles for the last 5 days"""
         candles = []
+        session = None
         try:
             headers = {
                 "X-API-KEY": self._api_key,
@@ -139,200 +165,108 @@ class BirdeyeCandles:
 
             # Calculate timestamps
             current_time = int(time.time())
-            five_days_ago = current_time - (5 * 24 * 60 * 60)
+            three_days_ago = current_time - (3 * 24 * 60 * 60)
 
             params = {
-                "address": "HbqujJENLP5cnH662jiaKvnbcVR9zz2HWPKRJob1m2s4",
+                "address": "HeLp6NuQkmYB4pYWo2zYs22mESHXPQYzXbB8n4V98jwC",
                 "type": "5m",
-                "time_from": five_days_ago,
+                "time_from": three_days_ago,
                 "time_to": current_time,
             }
 
             self.logger().info(f"Fetching Birdeye candles with params: {params}")
-            candles_logger.info(f"Fetching candles with params: {params}")
 
-            async with aiohttp.ClientSession() as session:
-                url = f"{CONSTANTS.REST_URL}{CONSTANTS.CANDLES_ENDPOINT}"
-                try:
-                    async with session.get(url, headers=headers, params=params) as resp:
-                        if resp.status != 200:
-                            error_text = await resp.text()
-                            error_msg = f"Birdeye API error (status {resp.status}): {error_text}"
-                            self.logger().error(error_msg)
-                            candles_logger.error(error_msg)
-                            return []
+            # Write directly to file for debugging
+            with open(log_file, "a") as f:
+                f.write(
+                    f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - INFO - Fetching with params: {params}\n"
+                )
 
-                        try:
-                            response_json = await resp.json()
-                        except Exception as e:
-                            error_msg = f"Error parsing Birdeye JSON response: {str(e)}\nRaw response: {await resp.text()}"
-                            self.logger().error(error_msg)
-                            candles_logger.error(error_msg)
-                            return []
+            session = aiohttp.ClientSession()
+            url = f"{CONSTANTS.REST_URL}{CONSTANTS.CANDLES_ENDPOINT}"
 
-                        if not isinstance(response_json, dict):
-                            error_msg = (
-                                f"Unexpected Birdeye response format: {response_json}"
-                            )
-                            self.logger().error(error_msg)
-                            candles_logger.error(error_msg)
-                            return []
-
-                        data = response_json.get("data", [])
-                        if not data:
-                            error_msg = "No candles data in Birdeye response"
-                            self.logger().warning(error_msg)
-                            candles_logger.warning(error_msg)
-                            return []
-
-                        candles_logger.info("\nProcessed Candles:")
-                        candles_logger.info(
-                            "Timestamp | Open | High | Low | Close | Volume"
+            async with session.get(url, headers=headers, params=params) as resp:
+                if resp.status != 200:
+                    error_text = await resp.text()
+                    error_msg = (
+                        f"Birdeye API error (status {resp.status}): {error_text}"
+                    )
+                    with open(log_file, "a") as f:
+                        f.write(
+                            f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - ERROR - {error_msg}\n"
                         )
-                        candles_logger.info("-" * 60)
-
-                        for candle in data:
-                            try:
-                                # Log raw candle data for debugging
-                                candles_logger.debug(
-                                    f"Processing raw candle data: {candle}"
-                                )
-
-                                if not isinstance(candle, dict):
-                                    tb = traceback.extract_tb(sys.exc_info()[2])
-                                    error_msg = (
-                                        f"Invalid Birdeye candle format at line {tb[-1].lineno} - "
-                                        f"expected dict, got {type(candle)}: {candle}\n"
-                                        f"Stack trace:\n{traceback.format_stack()}"
-                                    )
-                                    self.logger().error(error_msg)
-                                    candles_logger.error(error_msg)
-                                    continue
-
-                                # Validate required fields exist
-                                required_fields = [
-                                    "time",
-                                    "open",
-                                    "high",
-                                    "low",
-                                    "close",
-                                    "volume",
-                                ]
-                                missing_fields = [
-                                    field
-                                    for field in required_fields
-                                    if field not in candle
-                                ]
-                                if missing_fields:
-                                    tb = traceback.extract_tb(sys.exc_info()[2])
-                                    error_msg = (
-                                        f"Missing required fields in Birdeye candle data at line {tb[-1].lineno}: "
-                                        f"{missing_fields}\nStack trace:\n{traceback.format_stack()}"
-                                    )
-                                    self.logger().error(error_msg)
-                                    candles_logger.error(error_msg)
-                                    continue
-
-                                timestamp = int(float(candle.get("time", 0)) * 1000)
-                                try:
-                                    candle_data = [
-                                        timestamp,
-                                        float(candle.get("open", 0)),
-                                        float(candle.get("high", 0)),
-                                        float(candle.get("low", 0)),
-                                        float(candle.get("close", 0)),
-                                        float(candle.get("volume", 0)),
-                                        0.0,  # Quote asset volume
-                                        0,  # Number of trades
-                                        0.0,  # Taker buy base volume
-                                        0.0,  # Taker buy quote volume
-                                    ]
-                                except ValueError as e:
-                                    tb = traceback.extract_tb(sys.exc_info()[2])
-                                    error_msg = (
-                                        f"Error converting Birdeye candle values to float at line {tb[-1].lineno}: "
-                                        f"{str(e)}\nCandle data: {candle}\n"
-                                        f"Stack trace:\n{traceback.format_exc()}"
-                                    )
-                                    self.logger().error(error_msg)
-                                    candles_logger.error(error_msg)
-                                    continue
-
-                                candles.append(candle_data)
-
-                                readable_time = time.strftime(
-                                    "%Y-%m-%d %H:%M:%S",
-                                    time.localtime(timestamp / 1000),
-                                )
-                                candles_logger.info(
-                                    f"{readable_time} | {candle.get('open', 0):.4f} | {candle.get('high', 0):.4f} | "
-                                    f"{candle.get('low', 0):.4f} | {candle.get('close', 0):.4f} | {candle.get('volume', 0):.2f}"
-                                )
-                            except (ValueError, TypeError, KeyError) as e:
-                                error_msg = f"Error processing candle {candle}: {str(e)}\n{traceback.format_exc()}"
-                                self.logger().error(error_msg)
-                                candles_logger.error(error_msg)
-                                continue
-
-                        candles.sort(key=lambda x: x[0])
-
-                        candles_logger.info(f"\nTotal candles received: {len(candles)}")
-                        if len(candles) > 0:
-                            first_candle_time = time.strftime(
-                                "%Y-%m-%d %H:%M:%S",
-                                time.localtime(candles[0][0] / 1000),
-                            )
-                            last_candle_time = time.strftime(
-                                "%Y-%m-%d %H:%M:%S",
-                                time.localtime(candles[-1][0] / 1000),
-                            )
-                            candles_logger.info(
-                                f"Time range: {first_candle_time} to {last_candle_time}"
-                            )
-
-                        try:
-                            for candle in candles:
-                                db_candle = BirdeyeCandle(
-                                    token_address="HbqujJENLP5cnH662jiaKvnbcVR9zz2HWPKRJob1m2s4",
-                                    interval="5m",
-                                    timestamp=time.strftime(
-                                        "%Y-%m-%d %H:%M:%S",
-                                        time.localtime(candle[0] / 1000),
-                                    ),
-                                    open=candle[1],
-                                    high=candle[2],
-                                    low=candle[3],
-                                    close=candle[4],
-                                    volume=candle[5],
-                                )
-                                self._db_session.merge(db_candle)
-                            self._db_session.commit()
-                        except SQLAlchemyError as e:
-                            error_msg = f"Database error while storing candles: {str(e)}\n{traceback.format_exc()}"
-                            self.logger().error(error_msg)
-                            candles_logger.error(error_msg)
-                            self._db_session.rollback()
-                        except Exception as e:
-                            error_msg = f"Error storing candles in database: {str(e)}\n{traceback.format_exc()}"
-                            self.logger().error(error_msg)
-                            candles_logger.error(error_msg)
-                            self._db_session.rollback()
-
-                        return candles
-
-                except aiohttp.ClientError as e:
-                    error_msg = f"HTTP client error: {str(e)}\n{traceback.format_exc()}"
-                    self.logger().error(error_msg)
-                    candles_logger.error(error_msg)
                     return []
+
+                response_json = await resp.json()
+                data = response_json.get("data", {})
+                items = data.get("items", [])
+
+                # Write directly to file
+                with open(log_file, "a") as f:
+                    f.write(
+                        f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - INFO - === Candles Response ===\n"
+                    )
+                    f.write(
+                        f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - INFO - Status: {resp.status}\n"
+                    )
+                    f.write(
+                        f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - INFO - Total items: {len(items)}\n"
+                    )
+
+                    if items:
+                        for candle in items:
+                            log_msg = (
+                                f"Time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(float(candle['unixTime'])))} | "
+                                f"O: {candle['o']:.4f} | H: {candle['h']:.4f} | L: {candle['l']:.4f} | "
+                                f"C: {candle['c']:.4f} | V: {candle['v']:.2f}"
+                            )
+                            f.write(
+                                f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - INFO - {log_msg}\n"
+                            )
+
+                    f.write(
+                        f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - INFO - === End Candles Response ===\n"
+                    )
+
+                # Process candles for return value
+                for candle in items:
+                    try:
+                        timestamp = int(float(candle["unixTime"])) * 1000
+                        candle_data = [
+                            timestamp,
+                            float(candle["o"]),
+                            float(candle["h"]),
+                            float(candle["l"]),
+                            float(candle["c"]),
+                            float(candle["v"]),
+                            0.0,  # Quote asset volume
+                            0,  # Number of trades
+                            0.0,  # Taker buy base volume
+                            0.0,  # Taker buy quote volume
+                        ]
+                        candles.append(candle_data)
+                    except (ValueError, TypeError, KeyError) as e:
+                        with open(log_file, "a") as f:
+                            f.write(
+                                f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - ERROR - Error processing candle: {str(e)}\n"
+                            )
+                        continue
+
+            return candles
 
         except Exception as e:
             error_msg = (
                 f"Error fetching historical candles: {str(e)}\n{traceback.format_exc()}"
             )
-            self.logger().error(error_msg)
-            candles_logger.error(error_msg)
+            with open(log_file, "a") as f:
+                f.write(
+                    f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - ERROR - {error_msg}\n"
+                )
             return []
+
+        finally:
+            if session and not session.closed:
+                await session.close()
 
     def stop(self):
         try:
@@ -344,11 +278,11 @@ class BirdeyeCandles:
                 except SQLAlchemyError as e:
                     error_msg = f"Error closing database session: {str(e)}\n{traceback.format_exc()}"
                     self.logger().error(error_msg)
-                    candles_logger.error(error_msg)
-            candles_logger.info("=== Ending Birdeye candles session ===\n")
+                    _candles_logger.error(error_msg)
+            _candles_logger.info("=== Ending Birdeye candles session ===\n")
         except Exception as e:
             error_msg = (
                 f"Error stopping BirdeyeCandles: {str(e)}\n{traceback.format_exc()}"
             )
             self.logger().error(error_msg)
-            candles_logger.error(error_msg)
+            _candles_logger.error(error_msg)
