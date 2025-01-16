@@ -6,9 +6,9 @@ from typing import Dict
 from hummingbot.connector.connector_base import ConnectorBase
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
 from hummingbot.data_feed.market_data_provider import MarketDataProvider
-from hummingbot.strategy_v2.strategy_base import StrategyBase
 from hummingbot.strategy.rocketman.rocketman_config import RocketmanConfig
 from hummingbot.strategy.rocketman.rocketman_controller import RocketmanController
+from hummingbot.strategy_v2.strategy_base import StrategyBase
 
 
 class RocketmanStrategy(StrategyBase):

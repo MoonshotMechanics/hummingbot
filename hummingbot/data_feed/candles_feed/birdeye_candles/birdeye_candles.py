@@ -1,36 +1,33 @@
 import os
-from datetime import datetime
 from typing import List, Optional
+import time
+
 import aiohttp
 from bidict import bidict
-import time
-import json
-import asyncio
 
 from hummingbot import data_path
 from hummingbot.core.network_iterator import NetworkStatus
-from hummingbot.data_feed.candles_feed.candles_base import CandlesBase
 from hummingbot.data_feed.candles_feed.birdeye_candles import constants as CONSTANTS
-from hummingbot.data_feed.candles_feed.birdeye_candles.models import BitqueryCandle
+from hummingbot.data_feed.candles_feed.birdeye_candles.models import BirdeyeCandle
+from hummingbot.data_feed.candles_feed.candles_base import CandlesBase
 from hummingbot.logger import HummingbotLogger
 
 logger = HummingbotLogger(__name__)
 
 
-class BitqueryCandles(CandlesBase):
+class BirdeyeCandles(CandlesBase):
     _logger = None
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._db_session = None
         self._initialize_db()
-        self._streaming_task = None
-        self._last_timestamp = None
-        self.logger().info("🔄 Initialized Bitquery streaming candles feed")
+        self._api_key = CONSTANTS.DEFAULT_API_KEY
+        self.logger().info("🔄 Initialized Birdeye candles feed")
 
     def _initialize_db(self):
-        db_path = os.path.join(data_path(), "bitquery_candles.db")
-        Session = BitqueryCandle.create_tables(db_path)
+        db_path = os.path.join(data_path(), "birdeye_candles.db")
+        Session = BirdeyeCandle.create_tables(db_path)
         self._db_session = Session()
 
     @property
@@ -53,35 +50,28 @@ class BitqueryCandles(CandlesBase):
     ) -> List[List[float]]:
         """Fetch historical candles for backtesting"""
         headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {CONSTANTS.BITQUERY_TOKEN}",
+            "X-API-KEY": self._api_key,
+            "Accept": "application/json",
+            "X-Chain": "solana",
         }
 
-        # Format the OHLC query with variables
-        query = CONSTANTS.OHLC_QUERY.copy()
-        query["variables"].update(
-            {
-                "token": self._ex_trading_pair,
-                "from": datetime.utcfromtimestamp(start_time).isoformat(),
-                "till": datetime.utcfromtimestamp(end_time).isoformat(),
-                "interval": CONSTANTS.INTERVALS[self.interval]
-                // 60,  # Convert seconds to minutes
-            }
-        )
+        params = {
+            "address": "HbqujJENLP5cnH662jiaKvnbcVR9zz2HWPKRJob1m2s4",
+            "type": CONSTANTS.INTERVALS[self.interval],
+            "time_from": int(start_time),  # Unix timestamp in seconds
+            "time_to": int(end_time),  # Unix timestamp in seconds
+        }
 
         if CONSTANTS.DEBUG_LOGGING:
             self.logger().info(
                 f"🔍 Fetching historical candles from {start_time} to {end_time}"
             )
-            self.logger().info(f"📊 Query: {query}")
+            self.logger().info(f"📊 Params: {params}")
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    CONSTANTS.REST_URL,
-                    headers=headers,
-                    json=query,
-                ) as resp:
+                url = f"{CONSTANTS.REST_URL}{CONSTANTS.CANDLES_ENDPOINT}"
+                async with session.get(url, headers=headers, params=params) as resp:
                     if resp.status != 200:
                         error_text = await resp.text()
                         self.logger().error(f"❌ API error: {error_text}")
@@ -91,34 +81,29 @@ class BitqueryCandles(CandlesBase):
                     if CONSTANTS.DEBUG_LOGGING:
                         self.logger().info(f"📥 Received data: {data}")
 
-                    trades = data.get("data", {}).get("Solana", {}).get("DEXTrades", [])
-                    if not trades:
-                        self.logger().info("❌ No trades in response")
+                    if not data.get("data", []):
+                        self.logger().info("❌ No candles in response")
                         return []
 
-                    # Convert trades to candles format
+                    # Convert candles to required format
                     candles = []
-                    for trade in trades:
+                    for candle in data["data"]:
                         timestamp = int(
-                            datetime.strptime(
-                                trade["timeInterval"]["minute"], "%Y-%m-%dT%H:%M:%SZ"
-                            ).timestamp()
-                            * 1000
+                            candle["time"] * 1000
                         )  # Convert to milliseconds
-
-                        candle = [
+                        candle_data = [
                             timestamp,
-                            float(trade["priceOpen"]),
-                            float(trade["priceHigh"]),
-                            float(trade["priceLow"]),
-                            float(trade["priceClose"]),
-                            float(trade["volume"]),
+                            float(candle["open"]),
+                            float(candle["high"]),
+                            float(candle["low"]),
+                            float(candle["close"]),
+                            float(candle["volume"]),
                             0.0,  # Quote asset volume
-                            int(trade["trades"]),  # Number of trades
+                            0,  # Number of trades
                             0.0,  # Taker buy base volume
                             0.0,  # Taker buy quote volume
                         ]
-                        candles.append(candle)
+                        candles.append(candle_data)
 
                     # Sort by timestamp ascending
                     candles.sort(key=lambda x: x[0])
@@ -130,203 +115,47 @@ class BitqueryCandles(CandlesBase):
             )
             return []
 
-    async def _start_polling(self):
-        """Poll trade data from Bitquery REST API and aggregate into candles"""
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {CONSTANTS.BITQUERY_TOKEN}",
-        }
-
-        # Format the trades query with variables
-        query = CONSTANTS.TRADES_QUERY.copy()
-        query["variables"].update(
-            {
-                "network": "mainnet",
-                "token": self._ex_trading_pair,
-            }
-        )
-
-        if CONSTANTS.DEBUG_LOGGING:
-            self.logger().info(f"🔍 Token address: {self._ex_trading_pair}")
-            self.logger().info(f"📊 Interval: {self.interval}")
-            self.logger().info(f"📝 Query: {query}")
-
-        last_trade_time = None
-        current_candle = None
-
-        while True:
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(
-                        CONSTANTS.REST_URL,
-                        headers=headers,
-                        json=query,
-                    ) as resp:
-                        if resp.status != 200:
-                            error_text = await resp.text()
-                            self.logger().error(f"❌ API error: {error_text}")
-                            await asyncio.sleep(5)
-                            continue
-
-                        data = await resp.json()
-                        if CONSTANTS.DEBUG_LOGGING:
-                            self.logger().info(f"📥 Received data: {data}")
-
-                        trades = (
-                            data.get("data", {}).get("Solana", {}).get("DEXTrades", [])
-                        )
-                        if not trades:
-                            self.logger().info("❌ No trades in response")
-                            await asyncio.sleep(5)
-                            continue
-
-                        for trade in trades:
-                            timestamp = datetime.strptime(
-                                trade["Block"]["Time"], "%Y-%m-%dT%H:%M:%SZ"
-                            ).timestamp()
-
-                            # Skip trades we've already processed
-                            if last_trade_time and timestamp <= last_trade_time:
-                                continue
-
-                            price = float(trade["Trade"]["Price"])
-                            amount = float(trade["Trade"]["Amount"])
-
-                            # Calculate candle timestamp (floor to interval)
-                            candle_timestamp = int(timestamp) - (
-                                int(timestamp) % CONSTANTS.INTERVALS[self.interval]
-                            )
-
-                            # If this is a new candle
-                            if (
-                                current_candle is None
-                                or current_candle["timestamp"] != candle_timestamp
-                            ):
-                                # Send the previous candle if it exists
-                                if current_candle is not None:
-                                    await self._process_candle(current_candle)
-
-                                # Start new candle
-                                current_candle = {
-                                    "timestamp": candle_timestamp,
-                                    "open": price,
-                                    "high": price,
-                                    "low": price,
-                                    "close": price,
-                                    "volume": amount,
-                                    "trades": 1,
-                                }
-                            else:
-                                # Update existing candle
-                                current_candle["high"] = max(
-                                    current_candle["high"], price
-                                )
-                                current_candle["low"] = min(
-                                    current_candle["low"], price
-                                )
-                                current_candle["close"] = price
-                                current_candle["volume"] += amount
-                                current_candle["trades"] += 1
-
-                            last_trade_time = timestamp
-
-                # Sleep for a short time before polling again
-                await asyncio.sleep(5)  # Poll every 5 seconds for new trades
-
-            except asyncio.CancelledError:
-                self.logger().info("🛑 Polling task cancelled")
-                raise
-            except Exception as e:
-                self.logger().error(f"❌ Error polling data: {str(e)}", exc_info=True)
-                await asyncio.sleep(5)
-
-    async def _process_candle(self, candle: dict):
-        """Process a complete candle"""
-        try:
-            timestamp = datetime.fromtimestamp(candle["timestamp"])
-
-            db_candle = BitqueryCandle(
-                token_address=self._ex_trading_pair,
-                interval=self.interval,
-                timestamp=timestamp,
-                open=candle["open"],
-                high=candle["high"],
-                low=candle["low"],
-                close=candle["close"],
-                volume=candle["volume"],
-            )
-
-            self._db_session.add(db_candle)
-            self._db_session.commit()
-
-            # Convert to the format expected by subscribers
-            candle_data = [
-                candle["timestamp"] * 1000,  # Timestamp in milliseconds
-                candle["open"],
-                candle["high"],
-                candle["low"],
-                candle["close"],
-                candle["volume"],
-                0.0,  # Quote asset volume
-                candle["trades"],  # Number of trades
-                0.0,  # Taker buy base volume
-                0.0,  # Taker buy quote volume
-            ]
-
-            if CONSTANTS.DEBUG_LOGGING:
-                self.logger().debug(
-                    f"📤 Sending candle data to subscribers: {candle_data}"
-                )
-
-            # Notify subscribers
-            for callback in self._subscriptions:
-                await callback(candle_data)
-
-        except Exception as e:
-            self.logger().error(f"❌ Error processing candle: {str(e)}", exc_info=True)
-
     async def check_network(self) -> NetworkStatus:
-        """Check connection to Bitquery API"""
+        """Check connection to Birdeye API"""
         try:
             headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {CONSTANTS.BITQUERY_TOKEN}",
+                "X-API-KEY": self._api_key,
+                "Accept": "application/json",
+                "X-Chain": "solana",
+            }
+
+            # Get current time and 1 interval ago
+            current_time = int(time.time())  # Unix timestamp in seconds
+            interval_minutes = int(self.interval[:-1])  # Remove 'm' and convert to int
+            start_time = current_time - (interval_minutes * 60)  # Go back one interval
+
+            params = {
+                "address": "HbqujJENLP5cnH662jiaKvnbcVR9zz2HWPKRJob1m2s4",
+                "type": CONSTANTS.INTERVALS[self.interval],
+                "time_from": start_time,
+                "time_to": current_time,
             }
 
             async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    CONSTANTS.REST_URL,
-                    headers=headers,
-                    json=CONSTANTS.TEST_QUERY,
-                ) as resp:
+                url = f"{CONSTANTS.REST_URL}{CONSTANTS.CANDLES_ENDPOINT}"
+                async with session.get(url, headers=headers, params=params) as resp:
                     if resp.status == 200:
-                        data = await resp.json()
-                        if "errors" not in data:
-                            self.logger().info("✅ Bitquery API connection successful")
-                            return NetworkStatus.CONNECTED
+                        self.logger().info("✅ Birdeye API connection successful")
+                        return NetworkStatus.CONNECTED
                     error_text = await resp.text()
-                    self.logger().error(
-                        f"❌ Bitquery API returned status {resp.status}"
-                    )
+                    self.logger().error(f"❌ Birdeye API returned status {resp.status}")
                     self.logger().error(f"Error response: {error_text}")
         except Exception as e:
             self.logger().error(f"Error checking network: {str(e)}", exc_info=True)
         return NetworkStatus.NOT_CONNECTED
 
     async def start_network(self):
-        """Start polling for data"""
-        if self._streaming_task is None:
-            self._streaming_task = asyncio.create_task(self._start_polling())
+        """No need to start network for historical data"""
+        pass
 
     async def stop_network(self):
-        """Stop polling"""
-        if self._streaming_task is not None:
-            self._streaming_task.cancel()
-            try:
-                await self._streaming_task
-            except asyncio.CancelledError:
-                pass
-            self._streaming_task = None
+        """No need to stop network for historical data"""
+        pass
 
     def stop(self):
         if self._db_session:

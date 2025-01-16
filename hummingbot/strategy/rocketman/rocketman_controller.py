@@ -1,15 +1,12 @@
 import logging
 from decimal import Decimal
 from typing import List, Optional
+
 import pandas as pd
 
-from hummingbot.strategy_v2.controllers.directional_trading_controller_base import (
-    DirectionalTradingControllerBase,
-)
-from hummingbot.strategy_v2.executors.position_executor.position_executor import (
-    PositionExecutor,
-)
 from hummingbot.strategy.rocketman.rocketman_config import RocketmanConfig
+from hummingbot.strategy_v2.controllers.directional_trading_controller_base import DirectionalTradingControllerBase
+from hummingbot.strategy_v2.executors.position_executor.position_executor import PositionExecutor
 
 
 class RocketmanController(DirectionalTradingControllerBase):

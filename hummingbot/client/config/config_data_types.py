@@ -8,10 +8,7 @@ from pydantic import BaseModel, Extra, Field, validator
 from pydantic.schema import default_ref_template
 
 from hummingbot.client.config.config_methods import strategy_config_schema_encoder
-from hummingbot.client.config.config_validators import (
-    validate_connector,
-    validate_decimal,
-)
+from hummingbot.client.config.config_validators import validate_connector, validate_decimal
 
 
 class ClientConfigEnum(Enum):

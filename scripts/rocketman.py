@@ -8,9 +8,9 @@ from hummingbot.connector.connector_base import ConnectorBase
 from hummingbot.core.data_type.common import PositionMode
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
 from hummingbot.strategy.script_strategy_base import ScriptStrategyBase
+from hummingbot.strategy_v2.executors.position_executor.data_types import TrailingStop
 from hummingbot.strategy_v2.rocketman.rocketman import RocketmanStrategy
 from hummingbot.strategy_v2.rocketman.rocketman_config import RocketmanConfig
-from hummingbot.strategy_v2.executors.position_executor.data_types import TrailingStop
 
 
 class RocketmanScript(ScriptStrategyBase):

@@ -7,8 +7,8 @@ from sqlalchemy.orm import sessionmaker
 Base = declarative_base()
 
 
-class BirdeyeCandle(Base):
-    __tablename__ = "birdeye_candles"
+class BitqueryCandle(Base):
+    __tablename__ = "bitquery_candles"
 
     id = Column(Integer, primary_key=True)
     token_address = Column(String)
@@ -28,7 +28,7 @@ class BirdeyeCandle(Base):
 
     def to_list(self) -> list:
         return [
-            int(self.timestamp.timestamp() * 1000),  # Convert to milliseconds
+            int(self.timestamp.timestamp()),
             self.open,
             self.high,
             self.low,
