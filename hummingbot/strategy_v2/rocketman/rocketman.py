@@ -91,14 +91,13 @@ class RocketmanStrategy(StrategyV2Base):
 
             # Step 3: Initialize controller
             self._logger.info("🎮 Initializing strategy controller...")
-            self._controller = RocketmanController(
-                config=self._config,
-                market_data_provider=self._market_data_provider,
-                actions_queue=asyncio.Queue(),
-            )
-
-            self._initialized = True
-            self._logger.info("✅ Strategy initialization complete!")
+        self._controller = RocketmanController(
+            config=self._config,
+            market_data_provider=self._market_data_provider,
+            actions_queue=asyncio.Queue(),
+        )
+        self._initialized = True
+        self._logger.info("✅ Strategy initialization complete!")
 
         except asyncio.TimeoutError:
             self._logger.error("❌ Strategy initialization timed out!")
@@ -309,7 +308,7 @@ class RocketmanStrategy(StrategyV2Base):
                         self._logger.info(
                             f"    - Client network: {getattr(client, 'network', None)}"
                         )
-                        self._logger.info(
+        self._logger.info(
                             f"    - Client connection: {getattr(client, '_connection', None)}"
                         )
 
@@ -443,7 +442,7 @@ class RocketmanStrategy(StrategyV2Base):
         """Stop actions based on strategy signals"""
         self._logger.info("🛑 Evaluating signals for stop actions...")
         stop_actions = []
-        if "signal" in self._controller.processed_data:
+            if "signal" in self._controller.processed_data:
             signal = self._controller.processed_data["signal"]
             self._logger.info(f"📊 Current signal for stop evaluation: {signal}")
             if signal == 0:  # Exit signal
